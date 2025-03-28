@@ -135,19 +135,113 @@ function extractNotes(data) {
 }
 
 function extractStatus(data, action) {
+  // Updated to use the exact options from your Airtable
+  // Based on the successful read record, your Airtable uses "In progress" with lowercase p
+  const safeStatuses = ["In progress", "Done", "Not started"];
+  
   if (action) {
-    return action.toUpperCase();
+    // Map common webhook actions to the actual Airtable statuses
+    switch(action.toLowerCase()) {
+      case "created":
+        return "Not started";
+      case "updated":
+        return "In progress";
+      case "deleted":
+      case "completed":
+        return "Done";
+      default:
+        return "Not started"; // Default safe option
+    }
   }
   
   if (data.attributes && data.attributes.status) {
-    return data.attributes.status;
+    // Check if the status from data is one of our safe statuses
+    const statusFromData = data.attributes.status;
+    if (safeStatuses.includes(statusFromData)) {
+      return statusFromData;
+    }
   }
   
-  return "RECEIVED";
+  // Default safe option
+  return "Not started";
+}
+
+/**
+ * Get table schema and metadata directly from Airtable
+ * @returns {Promise} - Resolves with table metadata
+ */
+async function getTableSchema() {
+  return new Promise((resolve, reject) => {
+    // First, let's try to get table metadata directly
+    try {
+      // This will give us basic table info
+      const schema = {
+        tableName: TABLE_NAME,
+        knownFields: [
+          { name: 'Name', type: 'text' },
+          { name: 'Notes', type: 'text' },
+          // Updated to match the exact case from your existing record
+          { name: 'Status', type: 'singleSelect', options: ['In progress', 'Done', 'Not started'] }
+        ],
+        recommendedValues: {
+          // Updated to match the exact case from your existing record
+          'Status': ['In progress', 'Done', 'Not started']
+        }
+      };
+      
+      // Get some sample records if they exist
+      base(TABLE_NAME).select({
+        maxRecords: 3
+      }).firstPage((err, records) => {
+        if (err) {
+          // If we can't get records, still return the basic schema
+          return resolve(schema);
+        }
+        
+        try {
+          schema.records = records.map(record => ({
+            id: record.id,
+            fields: record.fields
+          }));
+          
+          // Try to infer field types from existing records
+          if (records && records.length > 0) {
+            const allFields = new Set();
+            
+            // Collect all field names from all records
+            records.forEach(record => {
+              Object.keys(record.fields).forEach(field => allFields.add(field));
+            });
+            
+            // Look for additional fields we didn't know about
+            allFields.forEach(fieldName => {
+              const knownField = schema.knownFields.find(f => f.name === fieldName);
+              if (!knownField) {
+                // Add discovered fields to our schema
+                schema.knownFields.push({
+                  name: fieldName,
+                  type: 'unknown',
+                  discovered: true
+                });
+              }
+            });
+          }
+          
+          resolve(schema);
+        } catch (error) {
+          // If there's an error processing records, still return the basic schema
+          resolve(schema);
+        }
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
 
 module.exports = {
   writeToAirtable,
   readFromAirtable,
-  transformWebhookToAirtableRecord
+  transformWebhookToAirtableRecord,
+  getTableSchema
 };

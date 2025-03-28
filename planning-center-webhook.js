@@ -9,7 +9,8 @@ require('dotenv').config();
 const { 
   writeToAirtable, 
   readFromAirtable,
-  transformWebhookToAirtableRecord 
+  transformWebhookToAirtableRecord,
+  getTableSchema
 } = require('./airtable-methods');
 
 const app = express();
@@ -43,22 +44,40 @@ app.get('/test-read', async (req, res) => {
 });
 
 // Route to test writing to Airtable
-app.get('/test-write', async (req, res) => {
+app.post('/test-write', async (req, res) => {
   try {
-    const testRecords = [
-      {
-        fields: {
-          'Name': 'Test User',
-          'Notes': 'This is a test record created via API',
-          'Status': 'TEST'
-        }
-      }
-    ];
+    // Get schema info first to understand our table
+    const schema = await getTableSchema();
+    console.log('Table schema:', schema);
     
-    const createdRecords = await writeToAirtable(testRecords);
+    // See what Status values might be valid
+    const statusOptions = schema.recommendedValues?.Status || ['New', 'In Progress', 'Completed', 'Pending'];
+    
+    // Use the first available status option, or 'New' if that's not possible
+    const safeStatus = statusOptions[0] || 'New';
+    console.log('Using status:', safeStatus);
+    
+    const testRecord = {
+      fields: {
+        // 'Name': 'Test User ' + new Date().toISOString().split('T')[0],
+        'Name': req.body.name,
+        // 'Notes': 'This is a test record created via API at ' + new Date().toISOString(),
+        'Notes': req.body.notes,
+      }
+    };
+    
+    // Only include Status if we have valid options
+    if (safeStatus) {
+      testRecord.fields['Status'] = safeStatus;
+    }
+    
+    console.log('Creating record:', testRecord);
+    const createdRecords = await writeToAirtable([testRecord]);
     
     res.json({
       message: 'Successfully created test record in Airtable',
+      schema: schema,
+      recordUsed: testRecord,
       records: createdRecords.map(record => ({
         id: record.getId(),
         fields: record.fields
@@ -68,7 +87,8 @@ app.get('/test-write', async (req, res) => {
     console.error('Error writing to Airtable:', error);
     res.status(500).json({
       message: 'Error writing to Airtable',
-      error: error.message
+      error: error.message,
+      stack: error.stack
     });
   }
 });
@@ -78,13 +98,43 @@ app.post('/webhook', async (req, res) => {
   try {
     console.log('Received webhook from Planning Center:', JSON.stringify(req.body, null, 2));
     
-    // Transform webhook data to Airtable format
-    const airtableRecord = transformWebhookToAirtableRecord(req.body);
+    // First, get schema to understand our table structure
+    const schema = await getTableSchema();
+    console.log('Table schema for webhook processing:', schema);
     
-    console.log('Sending to Airtable:', airtableRecord);
+    // Transform webhook data to Airtable format
+    const rawAirtableRecord = transformWebhookToAirtableRecord(req.body);
+    
+    // Create a safe version of the record by only including fields likely to work
+    const safeRecord = {
+      fields: {
+        // Always include Name and Notes which are text fields
+        'Name': rawAirtableRecord.fields.Name || 'Webhook ' + new Date().toISOString()
+      }
+    };
+    
+    // Add Notes if it exists
+    if (rawAirtableRecord.fields.Notes) {
+      safeRecord.fields.Notes = rawAirtableRecord.fields.Notes;
+    }
+    
+    // Only include Status if we have valid options
+    const statusOptions = schema.recommendedValues?.Status || ['New', 'In Progress', 'Completed', 'Pending'];
+    if (statusOptions.length > 0) {
+      // Check if the status from the webhook is in our allowed list
+      const webhookStatus = rawAirtableRecord.fields.Status;
+      if (webhookStatus && statusOptions.includes(webhookStatus)) {
+        safeRecord.fields.Status = webhookStatus;
+      } else {
+        // Default to the first allowed value
+        safeRecord.fields.Status = statusOptions[0];
+      }
+    }
+    
+    console.log('Sending to Airtable:', safeRecord);
     
     // Add record to Airtable
-    const createdRecords = await writeToAirtable([airtableRecord]);
+    const createdRecords = await writeToAirtable([safeRecord]);
     
     console.log('Successfully added record to Airtable:', createdRecords);
     res.status(200).json({
@@ -102,9 +152,27 @@ app.post('/webhook', async (req, res) => {
 
 // Start the server
 const PORT = process.env.PORT || 3000;
+// Route to inspect table schema
+app.get('/inspect-schema', async (req, res) => {
+  try {
+    const schema = await getTableSchema();
+    res.json({
+      message: 'Table schema information',
+      schema: schema
+    });
+  } catch (error) {
+    console.error('Error getting table schema:', error);
+    res.status(500).json({
+      message: 'Error getting table schema',
+      error: error.message
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`- Test read route: http://localhost:${PORT}/test-read`);
   console.log(`- Test write route: http://localhost:${PORT}/test-write`);
+  console.log(`- Inspect schema route: http://localhost:${PORT}/inspect-schema`);
   console.log(`- Webhook endpoint: http://localhost:${PORT}/webhook`);
 });
