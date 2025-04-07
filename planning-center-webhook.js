@@ -95,6 +95,7 @@ app.post('/test-write', async (req, res) => {
 
 // Handle Planning Center webhooks
 app.post('/webhook', async (req, res) => {
+  console.log('Received webhook:', req.body);
   try {
     console.log('Received webhook from Planning Center:', JSON.stringify(req.body, null, 2));
     
